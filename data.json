@@ -1,0 +1,81 @@
+{
+  "monitors": [
+    {
+      "id": "mon_media",
+      "name": "Media Tracker API",
+      "url": "https://media-tracker-1hj2.onrender.com/api/health",
+      "method": "GET",
+      "expectedStatus": 200,
+      "timeoutMs": 3000,
+      "intervalMinutes": 5,
+      "assertions": [
+        {
+          "type": "json_path_equals",
+          "path": "$.status",
+          "value": "ok"
+        }
+      ],
+      "status": "degraded",
+      "uptime": 0,
+      "p95": 3009,
+      "lastChecked": "just now",
+      "region": "us-west-2",
+      "color": "purple",
+      "failureStreak": 1
+    },
+    {
+      "id": "mon_demo",
+      "name": "Demo Payments API",
+      "url": "https://api.stripe.com/health",
+      "method": "GET",
+      "expectedStatus": 200,
+      "timeoutMs": 5000,
+      "intervalMinutes": 10,
+      "assertions": [],
+      "status": "degraded",
+      "uptime": 98.72,
+      "p95": 1240,
+      "lastChecked": "4 min ago",
+      "region": "us-east-1",
+      "color": "orange"
+    },
+    {
+      "id": "mon_school",
+      "name": "Class Project",
+      "url": "https://example.com/api/v1/status",
+      "method": "GET",
+      "expectedStatus": 200,
+      "timeoutMs": 2000,
+      "intervalMinutes": 5,
+      "assertions": [],
+      "status": "up",
+      "uptime": 100,
+      "p95": 188,
+      "lastChecked": "5 min ago",
+      "region": "us-west-2",
+      "color": "blue"
+    }
+  ],
+  "incidents": [
+    {
+      "id": "inc_1",
+      "monitorId": "mon_demo",
+      "title": "High latency detected",
+      "reason": "p95 latency exceeded 1000ms",
+      "startedAt": "Today, 09:42 AM",
+      "duration": "18 min",
+      "open": false
+    }
+  ],
+  "checks": [
+    {
+      "id": "dcfcec9d-bda6-4e6a-9570-aca209c787ae",
+      "monitorId": "mon_media",
+      "ok": false,
+      "latency": 3009,
+      "statusCode": null,
+      "reason": "Timed out after 3000ms",
+      "createdAt": "2026-09-11T04:32:06.058Z"
+    }
+  ]
+}

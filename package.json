@@ -1,0 +1,13 @@
+{
+  "name": "api-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Developer-facing API health monitoring MVP",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "infra:build": "npm --prefix infra run build",
+    "infra:synth": "npm --prefix infra run synth"
+  }
+}
