@@ -11,7 +11,7 @@ function makeTemplate(props: { budgetEmail?: string } = {}) {
 
 test('creates the queue-based scheduled check architecture', () => {
   const output = makeTemplate();
-  output.resourceCountIs('AWS::DynamoDB::Table', 3);
+  output.resourceCountIs('AWS::DynamoDB::Table', 6);
   output.resourceCountIs('AWS::SQS::Queue', 3);
   output.resourceCountIs('AWS::Scheduler::Schedule', 1);
   output.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
@@ -25,6 +25,15 @@ test('creates the queue-based scheduled check architecture', () => {
   output.hasResourceProperties('AWS::Scheduler::Schedule', { ScheduleExpression: 'rate(1 minute)', FlexibleTimeWindow: { Mode: 'OFF' } });
   output.hasResourceProperties('AWS::SQS::Queue', { FifoQueue: true });
   output.hasResourceProperties('AWS::SQS::Queue', Match.not(Match.objectLike({ FifoQueue: true })));
+  output.hasResourceProperties('AWS::DynamoDB::Table', { KeySchema: [{ AttributeName: 'pageKey', KeyType: 'HASH' }] });
+  output.hasResourceProperties('AWS::IAM::Policy', {
+    PolicyDocument: {
+      Statement: Match.arrayWith([Match.objectLike({
+        Action: Match.arrayWith(['dynamodb:GetItem', 'dynamodb:PutItem']),
+        Resource: Match.anyValue()
+      })])
+    }
+  });
 });
 
 test('creates a five-dollar forecast budget only when an email is supplied', () => {

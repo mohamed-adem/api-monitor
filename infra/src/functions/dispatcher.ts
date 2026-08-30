@@ -21,6 +21,18 @@ export async function handler(): Promise<{ queued: number }> {
   }));
   let queued = 0;
   for (const item of (result.Items || []) as Monitor[]) {
+    const maintenance = item.maintenanceWindow;
+    if (maintenance && now >= Date.parse(maintenance.startsAt) && now < Date.parse(maintenance.endsAt)) {
+      await db.send(new UpdateCommand({
+        TableName: tableName,
+        Key: { userId: item.userId, monitorId: item.monitorId },
+        UpdateExpression: 'SET #status = :maintenance, nextCheckAt = :next, updatedAt = :updatedAt',
+        ConditionExpression: 'nextCheckAt = :previous AND enabled = :enabled',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: { ':maintenance': 'MAINTENANCE', ':next': Math.min(Date.parse(maintenance.endsAt), now + item.intervalMinutes * 60_000), ':updatedAt': new Date().toISOString(), ':previous': item.nextCheckAt, ':enabled': true }
+      }));
+      continue;
+    }
     const job: CheckJob = { jobId: randomUUID(), userId: item.userId, monitorId: item.monitorId, requestedAt: new Date().toISOString(), source: 'scheduled' };
     await sqs.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: JSON.stringify(job), MessageGroupId: item.monitorId, MessageDeduplicationId: job.jobId }));
     await db.send(new UpdateCommand({

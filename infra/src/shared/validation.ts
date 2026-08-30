@@ -1,6 +1,23 @@
 import * as dns from 'node:dns/promises';
 import * as net from 'node:net';
-import type { Assertion } from './model.js';
+import type { AlertEventType, Assertion, MaintenanceWindow } from './model.js';
+
+const MAX_MAINTENANCE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function validateMaintenanceWindow(value: unknown): MaintenanceWindow | undefined {
+  if (value == null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('Maintenance window must include a start and end time');
+  const raw = value as Record<string, unknown>;
+  const starts = Date.parse(String(raw.startsAt || ''));
+  const ends = Date.parse(String(raw.endsAt || ''));
+  if (!Number.isFinite(starts) || !Number.isFinite(ends)) throw new Error('Maintenance window must include valid start and end times');
+  if (ends <= starts) throw new Error('Maintenance window must end after it starts');
+  if (ends - starts > MAX_MAINTENANCE_MS) throw new Error('Maintenance window cannot exceed 7 days');
+  if (ends <= Date.now()) throw new Error('Maintenance window must end in the future');
+  const reason = String(raw.reason || 'Scheduled maintenance').trim();
+  if (!reason || reason.length > 160) throw new Error('Maintenance reason must be between 1 and 160 characters');
+  return { startsAt: new Date(starts).toISOString(), endsAt: new Date(ends).toISOString(), reason };
+}
 
 export function isPrivateAddress(address: string): boolean {
   if (net.isIPv4(address)) {
@@ -49,7 +66,34 @@ export function validateMonitorInput(input: Record<string, unknown>) {
     if (!['contains_text', 'json_path_exists', 'json_path_equals'].includes(assertion.type)) throw new Error(`Unsupported assertion type: ${String(assertion.type)}`);
     if ('path' in assertion && (typeof assertion.path !== 'string' || !assertion.path.startsWith('$.'))) throw new Error('JSON assertion paths must start with $.');
   }
-  return { name: input.name.trim(), url: url.toString(), method: method as 'GET' | 'HEAD', expectedStatus, timeoutMs, intervalMinutes, assertions: assertions as Assertion[] };
+  return { name: input.name.trim(), url: url.toString(), method: method as 'GET' | 'HEAD', expectedStatus, timeoutMs, intervalMinutes, assertions: assertions as Assertion[], maintenanceWindow: validateMaintenanceWindow(input.maintenanceWindow) };
+}
+
+export function validateAlertPreferenceInput(input: Record<string, unknown>) {
+  const email = String(input.email || '').trim().toLowerCase();
+  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('A valid alert email is required');
+  const allowed = new Set<AlertEventType>(['incident_opened', 'incident_resolved']);
+  const events = Array.isArray(input.events) ? [...new Set(input.events.map(String))] : [];
+  if (!events.length || events.some(event => !allowed.has(event as AlertEventType))) throw new Error('Select at least one valid alert event');
+  return { email, events: events as AlertEventType[] };
+}
+
+export function validatePublicIncidentUpdate(input: Record<string, unknown>) {
+  const publicTitle = String(input.publicTitle || '').trim();
+  const publicMessage = String(input.publicMessage || '').trim();
+  if (publicTitle.length > 100) throw new Error('Public incident title cannot exceed 100 characters');
+  if (publicMessage.length > 500) throw new Error('Public incident message cannot exceed 500 characters');
+  return { publicTitle, publicMessage };
+}
+
+export function validateStatusPageInput(input: Record<string, unknown>) {
+  if (typeof input.name !== 'string' || input.name.trim().length < 2 || input.name.trim().length > 80) throw new Error('Status page name must be between 2 and 80 characters');
+  const slug = String(input.slug || '').trim().toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/.test(slug)) throw new Error('Slug must be 3 to 40 lowercase letters, numbers, or hyphens');
+  const monitorIds = Array.isArray(input.monitorIds) ? [...new Set(input.monitorIds.map(String))] : [];
+  if (!monitorIds.length || monitorIds.length > 20) throw new Error('Select between 1 and 20 monitors');
+  if (monitorIds.some(id => !/^mon_[a-zA-Z0-9-]+$/.test(id))) throw new Error('A selected monitor ID is invalid');
+  return { name: input.name.trim(), slug, monitorIds, published: input.published !== false };
 }
 
 export async function assertPublicDestination(rawUrl: string): Promise<void> {

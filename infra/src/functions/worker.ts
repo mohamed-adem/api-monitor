@@ -11,6 +11,7 @@ const sns = new SNSClient({});
 const monitorsTable = process.env.MONITORS_TABLE!;
 const checksTable = process.env.CHECKS_TABLE!;
 const incidentsTable = process.env.INCIDENTS_TABLE!;
+const aggregatesTable = process.env.AGGREGATES_TABLE!;
 const alertTopicArn = process.env.ALERT_TOPIC_ARN!;
 const failureThreshold = Number(process.env.FAILURE_THRESHOLD || 2);
 const retentionDays = Number(process.env.CHECK_RETENTION_DAYS || 30);
@@ -58,6 +59,7 @@ async function processJob(job: CheckJob): Promise<void> {
   const monitorResult = await db.send(new GetCommand({ TableName: monitorsTable, Key: { userId: job.userId, monitorId: job.monitorId } }));
   const monitor = monitorResult.Item as Monitor | undefined;
   if (!monitor || !monitor.enabled) return;
+  if (monitor.maintenanceWindow && Date.now() >= Date.parse(monitor.maintenanceWindow.startsAt) && Date.now() < Date.parse(monitor.maintenanceWindow.endsAt)) return;
   const checkedAt = new Date().toISOString();
   const result = await performCheck(monitor);
   const expiresAt = Math.floor(Date.now() / 1000) + retentionDays * 86400;
@@ -70,12 +72,12 @@ async function processJob(job: CheckJob): Promise<void> {
   if (!result.ok && nextFailureStreak === failureThreshold && !activeIncidentId) {
     activeIncidentId = `inc_${job.jobId}`;
     transaction.push({ Put: { TableName: incidentsTable, Item: { monitorId: monitor.monitorId, incidentId: activeIncidentId, userId: monitor.userId, userStatus: `${monitor.userId}#OPEN`, status: 'OPEN', startedAt: checkedAt, reason: result.reason, openingCheckJobId: job.jobId }, ConditionExpression: 'attribute_not_exists(incidentId)' } });
-    notification = { subject: `Pulse incident: ${monitor.name}`, message: `${monitor.name} is down. ${result.reason}\n${monitor.url}` };
+    notification = { eventType: 'incident_opened', userId: monitor.userId, subject: `Pulse incident: ${monitor.name}`, message: `${monitor.name} is down. ${result.reason}\n${monitor.url}` };
   }
 
   if (result.ok && activeIncidentId) {
     transaction.push({ Update: { TableName: incidentsTable, Key: { monitorId: monitor.monitorId, incidentId: activeIncidentId }, UpdateExpression: 'SET #status = :resolved, userStatus = :userStatus, resolvedAt = :resolvedAt', ConditionExpression: '#status = :open', ExpressionAttributeNames: { '#status': 'status' }, ExpressionAttributeValues: { ':open': 'OPEN', ':resolved': 'RESOLVED', ':userStatus': `${monitor.userId}#RESOLVED`, ':resolvedAt': checkedAt } } });
-    notification = { subject: `Pulse recovery: ${monitor.name}`, message: `${monitor.name} recovered at ${checkedAt}.\n${monitor.url}` };
+    notification = { eventType: 'incident_resolved', userId: monitor.userId, subject: `Pulse recovery: ${monitor.name}`, message: `${monitor.name} recovered at ${checkedAt}.\n${monitor.url}` };
     activeIncidentId = undefined;
   }
 
@@ -86,6 +88,13 @@ async function processJob(job: CheckJob): Promise<void> {
     { Put: { TableName: checksTable, Item: { ...checkKey, observedAt: checkedAt, jobId: job.jobId, userId: job.userId, source: job.source, ...result, notification, notificationSent: false, expiresAt }, ConditionExpression: 'attribute_not_exists(checkedAt)' } },
     { Update: { TableName: monitorsTable, Key: { userId: monitor.userId, monitorId: monitor.monitorId }, UpdateExpression: updateExpression, ConditionExpression: 'enabled = :enabled AND (attribute_not_exists(lastProcessedJobId) OR lastProcessedJobId <> :jobId)', ExpressionAttributeNames: { '#status': 'status' }, ExpressionAttributeValues: { ':enabled': true, ':jobId': job.jobId, ':status': nextStatus, ':streak': nextFailureStreak, ':checkedAt': checkedAt, ':latency': result.latencyMs, ':statusCode': result.statusCode ?? -1, ...(activeIncidentId ? { ':incidentId': activeIncidentId } : {}) } } }
   );
+  const hourStart = new Date(checkedAt); hourStart.setUTCMinutes(0, 0, 0);
+  const dayStart = checkedAt.slice(0, 10);
+  const aggregateValues = { ':userId': monitor.userId, ':one': 1, ':success': result.ok ? 1 : 0, ':failure': result.ok ? 0 : 1, ':latency': result.latencyMs, ':updatedAt': checkedAt, ':expiresAt': Math.floor(Date.now() / 1000) + 90 * 86400 };
+  for (const [bucketKey, bucketType, bucketStart] of [
+    [`HOUR#${hourStart.toISOString()}`, 'HOUR', hourStart.toISOString()],
+    [`DAY#${dayStart}`, 'DAY', dayStart]
+  ]) transaction.push({ Update: { TableName: aggregatesTable, Key: { monitorId: monitor.monitorId, bucketKey }, UpdateExpression: 'SET userId = :userId, bucketType = :bucketType, bucketStart = :bucketStart, updatedAt = :updatedAt, expiresAt = :expiresAt ADD totalChecks :one, successCount :success, failureCount :failure, latencySumMs :latency', ExpressionAttributeValues: { ...aggregateValues, ':bucketType': bucketType, ':bucketStart': bucketStart } } });
   try { await db.send(new TransactWriteCommand({ TransactItems: transaction })); }
   catch (error) {
     if (error instanceof Error && error.name === 'TransactionCanceledException') {
@@ -98,9 +107,12 @@ async function processJob(job: CheckJob): Promise<void> {
   console.log(JSON.stringify({ _aws: { Timestamp: Date.now(), CloudWatchMetrics: [{ Namespace: 'Pulse/ApiMonitor', Dimensions: [['MonitorId']], Metrics: [{ Name: 'Latency', Unit: 'Milliseconds' }, { Name: 'Success', Unit: 'Count' }] }] }, MonitorId: monitor.monitorId, Latency: result.latencyMs, Success: result.ok ? 1 : 0, reason: result.reason }));
 }
 
-interface Notification { subject: string; message: string }
+interface Notification { eventType: 'incident_opened' | 'incident_resolved'; userId: string; subject: string; message: string }
 async function deliverNotification(checkKey: { monitorId: string; checkedAt: string }, notification: Notification): Promise<void> {
-  await sns.send(new PublishCommand({ TopicArn: alertTopicArn, Subject: notification.subject, Message: notification.message }));
+  await sns.send(new PublishCommand({ TopicArn: alertTopicArn, Subject: notification.subject, Message: notification.message, MessageAttributes: {
+    userId: { DataType: 'String', StringValue: notification.userId },
+    eventType: { DataType: 'String', StringValue: notification.eventType }
+  } }));
   await db.send(new UpdateCommand({ TableName: checksTable, Key: checkKey, UpdateExpression: 'SET notificationSent = :sent, notificationSentAt = :sentAt', ExpressionAttributeValues: { ':sent': true, ':sentAt': new Date().toISOString() } }));
 }
 

@@ -16,7 +16,6 @@ import * as nodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
 import * as sns from 'aws-cdk-lib/aws-sns';
-import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
@@ -69,6 +68,29 @@ export class ApiMonitorStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL
     });
 
+    const statusPages = new dynamodb.Table(this, 'StatusPages', {
+      partitionKey: { name: 'pageKey', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      removalPolicy: cdk.RemovalPolicy.DESTROY
+    });
+
+    const alertPreferences = new dynamodb.Table(this, 'AlertPreferences', {
+      partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      removalPolicy: cdk.RemovalPolicy.DESTROY
+    });
+
+    const aggregates = new dynamodb.Table(this, 'Aggregates', {
+      partitionKey: { name: 'monitorId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'bucketKey', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      timeToLiveAttribute: 'expiresAt',
+      removalPolicy: cdk.RemovalPolicy.DESTROY
+    });
+
     const deadLetterQueue = new sqs.Queue(this, 'CheckDeadLetterQueue', {
       fifo: true,
       retentionPeriod: cdk.Duration.days(14),
@@ -93,7 +115,6 @@ export class ApiMonitorStack extends cdk.Stack {
     });
 
     const alerts = new sns.Topic(this, 'IncidentAlerts', { displayName: 'Pulse incident alerts' });
-    if (props.budgetEmail) alerts.addSubscription(new subscriptions.EmailSubscription(props.budgetEmail));
 
     const userPool = new cognito.UserPool(this, 'Users', {
       selfSignUpEnabled: true,
@@ -126,28 +147,39 @@ export class ApiMonitorStack extends cdk.Stack {
         MONITORS_TABLE: monitors.tableName,
         CHECKS_TABLE: checks.tableName,
         INCIDENTS_TABLE: incidents.tableName,
+        STATUS_PAGES_TABLE: statusPages.tableName,
+        ALERT_PREFERENCES_TABLE: alertPreferences.tableName,
+        AGGREGATES_TABLE: aggregates.tableName,
+        ALERT_TOPIC_ARN: alerts.topicArn,
         CHECK_QUEUE_URL: checkQueue.queueUrl,
         USER_POOL_ID: userPool.userPoolId,
         USER_POOL_CLIENT_ID: userPoolClient.userPoolClientId
       }
     });
     monitors.grantReadWriteData(apiHandler);
-    checks.grantReadData(apiHandler);
-    incidents.grantReadData(apiHandler);
+    checks.grantReadWriteData(apiHandler);
+    incidents.grantReadWriteData(apiHandler);
+    statusPages.grantReadWriteData(apiHandler);
+    alertPreferences.grantReadWriteData(apiHandler);
+    aggregates.grantReadWriteData(apiHandler);
+    apiHandler.addToRolePolicy(new iam.PolicyStatement({ actions: ['dynamodb:TransactWriteItems'], resources: [statusPages.tableArn] }));
     checkQueue.grantSendMessages(apiHandler);
+    apiHandler.addToRolePolicy(new iam.PolicyStatement({ actions: ['sns:Subscribe', 'sns:GetSubscriptionAttributes', 'sns:SetSubscriptionAttributes', 'sns:Unsubscribe'], resources: [alerts.topicArn, `${alerts.topicArn}:*`] }));
 
     const worker = new nodejs.NodejsFunction(this, 'CheckWorker', {
       ...functionDefaults,
       entry: path.join(__dirname, '../src/functions/worker.ts'),
       handler: 'handler',
       logGroup: new logs.LogGroup(this, 'CheckWorkerLogs', { retention: logs.RetentionDays.ONE_WEEK, removalPolicy: cdk.RemovalPolicy.DESTROY }),
-      environment: { MONITORS_TABLE: monitors.tableName, CHECKS_TABLE: checks.tableName, INCIDENTS_TABLE: incidents.tableName, ALERT_TOPIC_ARN: alerts.topicArn, FAILURE_THRESHOLD: '2', CHECK_RETENTION_DAYS: '30' }
+      environment: { MONITORS_TABLE: monitors.tableName, CHECKS_TABLE: checks.tableName, INCIDENTS_TABLE: incidents.tableName, AGGREGATES_TABLE: aggregates.tableName, ALERT_TOPIC_ARN: alerts.topicArn, FAILURE_THRESHOLD: '2', CHECK_RETENTION_DAYS: '30' }
     });
     monitors.grantReadWriteData(worker);
-    checks.grantWriteData(worker);
+    // The worker reads the deterministic check key before writing so SQS retries stay idempotent.
+    checks.grantReadWriteData(worker);
     incidents.grantReadWriteData(worker);
+    aggregates.grantReadWriteData(worker);
     alerts.grantPublish(worker);
-    worker.addToRolePolicy(new iam.PolicyStatement({ actions: ['dynamodb:TransactWriteItems'], resources: [monitors.tableArn, checks.tableArn, incidents.tableArn] }));
+    worker.addToRolePolicy(new iam.PolicyStatement({ actions: ['dynamodb:TransactWriteItems'], resources: [monitors.tableArn, checks.tableArn, incidents.tableArn, aggregates.tableArn] }));
     worker.addEventSource(new sources.SqsEventSource(checkQueue, { batchSize: 5, reportBatchItemFailures: true }));
 
     const dispatcher = new nodejs.NodejsFunction(this, 'CheckDispatcher', {
@@ -180,13 +212,19 @@ export class ApiMonitorStack extends cdk.Stack {
     httpApi.addRoutes({ path: '/health', methods: [apigwv2.HttpMethod.GET], integration });
     httpApi.addRoutes({ path: '/api/config', methods: [apigwv2.HttpMethod.GET], integration });
     httpApi.addRoutes({ path: '/api/health', methods: [apigwv2.HttpMethod.GET], integration });
+    httpApi.addRoutes({ path: '/status/{slug}', methods: [apigwv2.HttpMethod.GET], integration });
+    httpApi.addRoutes({ path: '/api/status/{slug}', methods: [apigwv2.HttpMethod.GET], integration });
     for (const route of [
       { path: '/monitors', methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST] },
       { path: '/monitors/{monitorId}', methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.PATCH, apigwv2.HttpMethod.DELETE] },
       { path: '/monitors/{monitorId}/check', methods: [apigwv2.HttpMethod.POST] },
       { path: '/monitors/{monitorId}/checks', methods: [apigwv2.HttpMethod.GET] },
       { path: '/monitors/{monitorId}/incidents', methods: [apigwv2.HttpMethod.GET] },
-      { path: '/incidents', methods: [apigwv2.HttpMethod.GET] }
+      { path: '/monitors/{monitorId}/incidents/{incidentId}', methods: [apigwv2.HttpMethod.PATCH] },
+      { path: '/monitors/{monitorId}/analytics', methods: [apigwv2.HttpMethod.GET] },
+      { path: '/incidents', methods: [apigwv2.HttpMethod.GET] },
+      { path: '/alert-preferences', methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.PUT, apigwv2.HttpMethod.DELETE] },
+      { path: '/status-page', methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.PUT, apigwv2.HttpMethod.DELETE] }
     ]) httpApi.addRoutes({ ...route, integration, authorizer: jwtAuthorizer });
     for (const route of [
       { path: '/api/monitors', methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST] },
@@ -194,7 +232,11 @@ export class ApiMonitorStack extends cdk.Stack {
       { path: '/api/monitors/{monitorId}/check', methods: [apigwv2.HttpMethod.POST] },
       { path: '/api/monitors/{monitorId}/checks', methods: [apigwv2.HttpMethod.GET] },
       { path: '/api/monitors/{monitorId}/incidents', methods: [apigwv2.HttpMethod.GET] },
-      { path: '/api/incidents', methods: [apigwv2.HttpMethod.GET] }
+      { path: '/api/monitors/{monitorId}/incidents/{incidentId}', methods: [apigwv2.HttpMethod.PATCH] },
+      { path: '/api/monitors/{monitorId}/analytics', methods: [apigwv2.HttpMethod.GET] },
+      { path: '/api/incidents', methods: [apigwv2.HttpMethod.GET] },
+      { path: '/api/alert-preferences', methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.PUT, apigwv2.HttpMethod.DELETE] },
+      { path: '/api/status-page', methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.PUT, apigwv2.HttpMethod.DELETE] }
     ]) httpApi.addRoutes({ ...route, integration, authorizer: jwtAuthorizer });
 
     const webBucket = new s3.Bucket(this, 'WebAssets', {

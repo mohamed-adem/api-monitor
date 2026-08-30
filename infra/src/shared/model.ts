@@ -3,6 +3,12 @@ export type Assertion =
   | { type: 'json_path_exists'; path: string }
   | { type: 'json_path_equals'; path: string; value: unknown };
 
+export interface MaintenanceWindow {
+  startsAt: string;
+  endsAt: string;
+  reason: string;
+}
+
 export interface Monitor {
   userId: string;
   monitorId: string;
@@ -14,11 +20,24 @@ export interface Monitor {
   intervalMinutes: number;
   assertions: Assertion[];
   enabled: boolean;
-  status: 'PENDING' | 'UP' | 'DEGRADED' | 'DOWN';
+  status: 'PENDING' | 'UP' | 'DEGRADED' | 'DOWN' | 'MAINTENANCE';
+  maintenanceWindow?: MaintenanceWindow;
   failureStreak: number;
   activeIncidentId?: string;
   schedulePartition?: 'ACTIVE';
   nextCheckAt: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AlertEventType = 'incident_opened' | 'incident_resolved';
+
+export interface AlertPreference {
+  userId: string;
+  email: string;
+  events: AlertEventType[];
+  status: 'PENDING' | 'CONFIRMED';
+  subscriptionArn: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -36,4 +55,13 @@ export interface CheckResult {
   statusCode: number | null;
   latencyMs: number;
   reason: string;
+}
+
+export interface StatusPage {
+  name: string;
+  slug: string;
+  monitorIds: string[];
+  published: boolean;
+  createdAt: string;
+  updatedAt: string;
 }

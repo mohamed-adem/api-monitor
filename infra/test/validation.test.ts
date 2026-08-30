@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isPrivateAddress, validateMonitorInput, valueAtPath } from '../src/shared/validation.js';
+import { isPrivateAddress, validateAlertPreferenceInput, validateMonitorInput, validatePublicIncidentUpdate, validateStatusPageInput, valueAtPath } from '../src/shared/validation.js';
 
 test('accepts a public HTTPS monitor', () => {
   const result = validateMonitorInput({ name: 'Example API', url: 'https://example.com/health', method: 'GET', expectedStatus: 200, timeoutMs: 3000, intervalMinutes: 5 });
@@ -22,4 +22,27 @@ test('rejects local and private targets', () => {
 
 test('reads nested values for JSON assertions', () => {
   assert.equal(valueAtPath({ services: [{ status: 'ok' }] }, '$.services[0].status'), 'ok');
+});
+
+test('validates public status page configuration', () => {
+  const result = validateStatusPageInput({ name: 'Project status', slug: 'project-status', monitorIds: ['mon_1', 'mon_1', 'mon_2'], published: true });
+  assert.deepEqual(result.monitorIds, ['mon_1', 'mon_2']);
+  assert.equal(result.slug, 'project-status');
+  assert.throws(() => validateStatusPageInput({ name: 'Project status', slug: 'Bad slug', monitorIds: ['mon_1'] }), /Slug/);
+  assert.throws(() => validateStatusPageInput({ name: 'Project status', slug: 'valid-slug', monitorIds: [] }), /Select/);
+});
+
+test('validates one-time maintenance windows', () => {
+  const startsAt = new Date(Date.now() + 60_000).toISOString();
+  const endsAt = new Date(Date.now() + 3_600_000).toISOString();
+  const result = validateMonitorInput({ name: 'Maintained API', url: 'https://example.com', maintenanceWindow: { startsAt, endsAt, reason: 'Database upgrade' } });
+  assert.equal(result.maintenanceWindow?.reason, 'Database upgrade');
+  assert.throws(() => validateMonitorInput({ name: 'Maintained API', url: 'https://example.com', maintenanceWindow: { startsAt: endsAt, endsAt: startsAt } }), /end after/);
+});
+
+test('validates alert preferences and public updates', () => {
+  assert.deepEqual(validateAlertPreferenceInput({ email: 'Owner@Example.com', events: ['incident_opened', 'incident_opened'] }), { email: 'owner@example.com', events: ['incident_opened'] });
+  assert.throws(() => validateAlertPreferenceInput({ email: 'bad', events: [] }), /valid alert email/);
+  assert.deepEqual(validatePublicIncidentUpdate({ publicTitle: 'Investigating', publicMessage: 'We are checking.' }), { publicTitle: 'Investigating', publicMessage: 'We are checking.' });
+  assert.throws(() => validatePublicIncidentUpdate({ publicMessage: 'x'.repeat(501) }), /500/);
 });
