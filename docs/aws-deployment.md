@@ -50,7 +50,7 @@ npx cdk diff
 
 The initial stack should contain:
 
-- 3 DynamoDB tables and 2 global secondary indexes
+- 6 DynamoDB tables and 2 global secondary indexes
 - 1 FIFO work queue, 1 FIFO worker dead-letter queue, and 1 standard Scheduler dead-letter queue
 - 3 ARM64 Node.js Lambda functions
 - 1 EventBridge Scheduler schedule
@@ -79,7 +79,7 @@ After deployment, verify the complete authenticated check path with a temporary 
 ../scripts/aws-smoke-test.sh
 ```
 
-The smoke test removes its Cognito user, monitor, checks, and incidents before exiting. It requires `aws`, `curl`, `jq`, and `openssl`.
+The smoke test verifies persisted aggregates, alert-account isolation, maintenance suppression, and the public status page, then removes its Cognito user, monitor, checks, incidents, aggregates, and page before exiting. It requires `aws`, `curl`, `jq`, and `openssl`.
 
 To deploy with a $5 monthly forecast budget and SNS email subscription, substitute an email address you control:
 
@@ -87,7 +87,7 @@ To deploy with a $5 monthly forecast budget and SNS email subscription, substitu
 npx cdk deploy -c budgetEmail=you@example.com --require-approval broadening
 ```
 
-The command prints the API URL, Cognito user pool ID, web client ID, and SNS topic ARN. Confirm the SNS subscription email before expecting incident alerts.
+The command prints the API URL, Cognito user pool ID, web client ID, and SNS topic ARN. Each user configures an email under Account & security and must confirm AWS's subscription email before expecting incident alerts.
 
 ## 6. Smoke test
 
