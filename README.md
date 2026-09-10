@@ -26,6 +26,9 @@ flowchart LR
   API -->|Validate Cognito JWT| Auth
   API --> ApiFn[API Lambda]
   ApiFn --> Monitors[(DynamoDB monitors)]
+  ApiFn --> StatusPages[(DynamoDB status pages)]
+  ApiFn --> Preferences[(DynamoDB alert preferences)]
+  ApiFn --> Alerts[SNS filtered subscriptions]
   ApiFn --> Queue[SQS FIFO check queue]
   Scheduler[EventBridge Scheduler] --> Dispatcher[Dispatcher Lambda]
   Dispatcher --> Monitors
@@ -33,7 +36,8 @@ flowchart LR
   Queue --> Worker[Check worker Lambda]
   Worker --> Checks[(DynamoDB checks)]
   Worker --> Incidents[(DynamoDB incidents)]
-  Worker --> Alerts[SNS incident alerts]
+  Worker --> Aggregates[(DynamoDB hourly/daily rollups)]
+  Worker --> Alerts
   Worker --> Metrics[CloudWatch metrics]
   Queue --> DLQ[SQS dead-letter queue]
   Scheduler --> SchedulerDLQ[Scheduler dead-letter queue]
@@ -44,6 +48,12 @@ flowchart LR
 - Monitor creation, search, status filtering, detail, editing, pause/resume, cascade deletion, and manual check queueing
 - Dedicated, filterable monitor, check-run, and incident-history views on desktop and mobile
 - Browser history-aware navigation, working workspace/account menus, and an in-app help center
+- Configurable, auto-refreshing public status pages with selected services, live health, latency, open incidents, and recent recoveries
+- Reliability comparisons with p50/p95 latency, failure rate, state-change counts, and transparent flakiness classification
+- Persisted hourly and daily rollups for 24-hour, 7-day, and 30-day uptime, failure count, and average-latency analytics
+- Per-account email alert preferences with SNS filters for incident-opened and incident-resolved events
+- One-time maintenance windows that suppress checks and incident creation while showing maintenance publicly
+- Custom public incident titles and updates without exposing internal failure diagnostics
 - GET and HEAD health checks with status and timeout expectations
 - `contains_text`, `json_path_exists`, and `json_path_equals` assertions
 - DNS and IP checks that reject local, private, link-local, and reserved targets
@@ -85,7 +95,7 @@ npm run infra:synth
 
 Synthesis is read-only with respect to AWS: it creates a CloudFormation template locally but does not provision resources.
 
-Current validation includes 8 local domain tests and 5 infrastructure tests. They cover JSON/text assertions, private-network blocking, incident opening/recovery, monitor input validation, resource counts, runtime/architecture selection, scheduling, hosting, authentication, and conditional budget creation. No percentage coverage claim is made yet because line coverage is not currently instrumented.
+Current validation includes 11 local domain tests and 8 infrastructure tests. They cover JSON/text assertions, private-network blocking, incident opening/recovery, reliability calculations, monitor, maintenance, alert-preference, incident-update, and status-page validation, resource counts, runtime/architecture selection, scheduling, hosting, authentication, and conditional budget creation. No percentage coverage claim is made yet because line coverage is not currently instrumented.
 
 ## Deploy to AWS
 
@@ -100,13 +110,13 @@ npx cdk diff
 npx cdk deploy --require-approval broadening
 ```
 
-To include the optional $5 forecast budget and email alert subscription:
+To include the optional $5 forecast budget email:
 
 ```bash
 npx cdk deploy -c budgetEmail=you@example.com --require-approval broadening
 ```
 
-AWS sends a separate SNS confirmation email before incident notifications become active.
+Incident-alert emails are configured per user in Account & security. AWS sends a confirmation email before a saved subscription becomes active.
 
 Run the disposable authenticated smoke test after deployment:
 
@@ -118,7 +128,7 @@ See [the verified deployment state](docs/deployment-state.md) for the current en
 
 ## API routes
 
-`GET /health`, `GET /api/health`, and `GET /api/config` are public. Data routes require a Cognito access token. The `/api/*` forms are used by the CloudFront-hosted dashboard; unprefixed aliases are retained for direct API testing.
+`GET /health`, `GET /api/health`, `GET /api/config`, and `GET /status/{slug}` are public. Account data and status-page management routes require a Cognito access token. The `/api/*` forms are used by the CloudFront-hosted dashboard; unprefixed aliases are retained for direct API testing.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
@@ -130,7 +140,14 @@ See [the verified deployment state](docs/deployment-state.md) for the current en
 | `POST` | `/monitors/{monitorId}/check` | Queue an immediate check |
 | `GET` | `/monitors/{monitorId}/checks` | Return the latest 100 checks |
 | `GET` | `/monitors/{monitorId}/incidents` | Return incident history for a monitor |
+| `PATCH` | `/monitors/{monitorId}/incidents/{incidentId}` | Publish customer-safe incident text |
+| `GET` | `/monitors/{monitorId}/analytics?window=24h\|7d\|30d` | Return persisted uptime and average-latency rollups |
 | `GET` | `/incidents` | Return recent incidents across the account |
+| `GET/PUT/DELETE` | `/alert-preferences` | Read, configure, or remove a filtered email subscription |
+| `GET` | `/status-page` | Get the authenticated user's status-page configuration |
+| `PUT` | `/status-page` | Create or update a status page |
+| `DELETE` | `/status-page` | Delete a status page and disable its public link |
+| `GET` | `/status/{slug}` | Return a published status page without authentication |
 
 ## Cost posture
 
@@ -143,4 +160,4 @@ npx cdk destroy
 
 ## Current boundary
 
-The development backend is provisioned in `us-west-2`, and the repository includes CloudFront/S3 hosting plus Cognito browser authentication for deployment. Alert delivery still requires an SNS email subscription. Public status pages, alert preferences, and longer-window analytics are the next major product slices.
+The development backend is provisioned in `us-west-2`. It includes CloudFront/S3 hosting, Cognito authentication, monitor and incident lifecycles, public status pages, customer-safe incident updates, maintenance windows, filtered per-account SNS alerts, recent p50/p95 reliability analysis, and persisted longer-window uptime/average-latency rollups. Percentiles remain based on the latest 100 raw checks; the persisted buckets intentionally store aggregate counts and latency sums rather than long-window percentile sketches.
