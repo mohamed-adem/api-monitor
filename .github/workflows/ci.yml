@@ -83,7 +83,7 @@ jobs:
       - name: Preserve the deployed scheduler state
         run: |
           set -euo pipefail
-          schedule_name=$(aws cloudformation list-stack-resources --stack-name "$STACK_NAME" --query "StackResourceSummaries[?ResourceType=='AWS::Scheduler::Schedule'].PhysicalResourceId | [0]" --output text)
+          schedule_name=$(aws cloudformation describe-stack-resource --stack-name "$STACK_NAME" --logical-resource-id MinuteSchedule --query StackResourceDetail.PhysicalResourceId --output text)
           state=$(aws scheduler get-schedule --name "$schedule_name" --query State --output text)
           case "$state" in ENABLED|DISABLED) ;; *) echo 'Unexpected scheduler state'; exit 1 ;; esac
           echo "SCHEDULER_STATE=$state" >> "$GITHUB_ENV"
