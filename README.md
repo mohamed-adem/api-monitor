@@ -95,7 +95,11 @@ npm run infra:synth
 
 Synthesis is read-only with respect to AWS: it creates a CloudFormation template locally but does not provision resources.
 
-Current validation includes 11 local domain tests and 8 infrastructure tests. They cover JSON/text assertions, private-network blocking, incident opening/recovery, reliability calculations, monitor, maintenance, alert-preference, incident-update, and status-page validation, resource counts, runtime/architecture selection, scheduling, hosting, authentication, and conditional budget creation. No percentage coverage claim is made yet because line coverage is not currently instrumented.
+Current validation includes 11 local domain tests and 9 infrastructure tests. They cover JSON/text assertions, private-network blocking, incident opening/recovery, reliability calculations, monitor, maintenance, alert-preference, incident-update, and status-page validation, resource counts, runtime/architecture selection, scheduling, hosting, authentication, and conditional budget creation. No percentage coverage claim is made yet because line coverage is not currently instrumented.
+
+## CI/CD
+
+GitHub Actions validates pushes and pull requests with local/API tests, infrastructure tests, syntax checks, TypeScript checking, and CDK synthesis. A manually triggered deployment from `main` uses AWS OIDC credentials, preserves the deployed scheduler state, deploys a synthesized assembly, and checks the public API health endpoint. See [pipeline setup and operation](docs/github-actions.md) for the required GitHub environment and IAM configuration.
 
 ## Deploy to AWS
 

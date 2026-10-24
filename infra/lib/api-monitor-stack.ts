@@ -24,6 +24,7 @@ import * as sources from 'aws-cdk-lib/aws-lambda-event-sources';
 interface ApiMonitorStackProps extends cdk.StackProps {
   frontendOrigin: string;
   budgetEmail?: string;
+  schedulerState?: 'ENABLED' | 'DISABLED';
 }
 
 export class ApiMonitorStack extends cdk.Stack {
@@ -199,7 +200,7 @@ export class ApiMonitorStack extends cdk.Stack {
     new scheduler.CfnSchedule(this, 'MinuteSchedule', {
       flexibleTimeWindow: { mode: 'OFF' },
       scheduleExpression: 'rate(1 minute)',
-      state: 'ENABLED',
+      state: props.schedulerState ?? 'ENABLED',
       target: { arn: dispatcher.functionArn, roleArn: schedulerRole.roleArn, deadLetterConfig: { arn: schedulerDeadLetterQueue.queueArn }, retryPolicy: { maximumEventAgeInSeconds: 60, maximumRetryAttempts: 2 } }
     });
 

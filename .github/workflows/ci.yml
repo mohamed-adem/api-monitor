@@ -1,15 +1,26 @@
-name: CI
+name: CI/CD
 
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy the validated main commit to AWS development
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,7 +30,11 @@ jobs:
           cache-dependency-path: infra/package-lock.json
       - name: Install infrastructure dependencies
         run: npm ci --prefix infra
-      - name: Test local monitoring logic
+      - name: Check JavaScript syntax
+        run: |
+          node --check server.js
+          node --check public/app.js
+      - name: Test local API and monitoring logic
         run: npm test
       - name: Test infrastructure
         run: npm --prefix infra test
@@ -27,3 +42,72 @@ jobs:
         run: npm run infra:build
       - name: Synthesize CloudFormation
         run: npm run infra:synth
+      - name: Save validated cloud assembly
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-assembly-${{ github.sha }}
+          path: infra/cdk.out/
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy:
+    needs: validate
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: development
+    concurrency:
+      group: pulse-development-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: us-west-2
+      STACK_NAME: PulseApiMonitorDev
+      CDK_DISABLE_CLI_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+      - run: npm ci --prefix infra
+      - name: Authenticate to AWS with short-lived credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: pulse-${{ github.run_id }}
+      - name: Preserve the deployed scheduler state
+        run: |
+          set -euo pipefail
+          schedule_name=$(aws cloudformation describe-stack-resources --stack-name "$STACK_NAME" --query "StackResources[?ResourceType=='AWS::Scheduler::Schedule'].PhysicalResourceId | [0]" --output text)
+          state=$(aws scheduler get-schedule --name "$schedule_name" --query State --output text)
+          case "$state" in ENABLED|DISABLED) ;; *) echo 'Unexpected scheduler state'; exit 1 ;; esac
+          echo "SCHEDULER_STATE=$state" >> "$GITHUB_ENV"
+      - name: Synthesize deployment assembly and review diff
+        working-directory: infra
+        run: |
+          npx cdk synth -c schedulerState="$SCHEDULER_STATE"
+          npx cdk diff --app cdk.out --no-change-set
+      - name: Deploy the reviewed assembly
+        working-directory: infra
+        run: npx cdk deploy --app cdk.out --require-approval never --outputs-file deployment-outputs.json
+      - name: Check deployed API health
+        run: |
+          set -euo pipefail
+          web_url=$(node -p "require('./infra/deployment-outputs.json').PulseApiMonitorDev.WebUrl")
+          curl --fail --silent --show-error --retry 5 --retry-delay 10 --retry-all-errors "$web_url/api/health" -o /tmp/pulse-health.json
+          node -e "const health = require('/tmp/pulse-health.json'); if (health.status !== 'ok' || health.service !== 'pulse-api') process.exit(1)"
+          printf '### Deployment verified\n\nCommit: `%s`\n\nDashboard: %s\n\nScheduler: `%s`\n' "$GITHUB_SHA" "$web_url" "$SCHEDULER_STATE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Save deployment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            infra/deployment-outputs.json
+            infra/cdk.out/*.template.json
+          retention-days: 14

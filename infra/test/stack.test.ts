@@ -3,7 +3,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { ApiMonitorStack } from '../lib/api-monitor-stack.js';
 
-function makeTemplate(props: { budgetEmail?: string } = {}) {
+function makeTemplate(props: { budgetEmail?: string; schedulerState?: 'ENABLED' | 'DISABLED' } = {}) {
   const app = new cdk.App();
   const stack = new ApiMonitorStack(app, 'TestStack', { env: { account: '111111111111', region: 'us-west-2' }, frontendOrigin: 'http://localhost:3000', ...props });
   return Template.fromStack(stack);
@@ -39,4 +39,9 @@ test('creates the queue-based scheduled check architecture', () => {
 test('creates a five-dollar forecast budget only when an email is supplied', () => {
   makeTemplate().resourceCountIs('AWS::Budgets::Budget', 0);
   makeTemplate({ budgetEmail: 'owner@example.com' }).hasResourceProperties('AWS::Budgets::Budget', { Budget: Match.objectLike({ BudgetLimit: { Amount: 5, Unit: 'USD' } }) });
+});
+
+test('preserves an explicitly disabled monitoring scheduler', () => {
+  makeTemplate({ schedulerState: 'DISABLED' }).hasResourceProperties('AWS::Scheduler::Schedule', { State: 'DISABLED' });
+  makeTemplate().hasResourceProperties('AWS::Scheduler::Schedule', { State: 'ENABLED' });
 });
