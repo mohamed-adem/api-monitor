@@ -19,11 +19,13 @@ Deployment is continuous delivery with a manual release trigger: run **Actions â
     "Action": "sts:AssumeRoleWithWebIdentity",
     "Condition": {"StringEquals": {
       "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-      "token.actions.githubusercontent.com:sub": "repo:mohamed-adem/api-monitor:environment:development"
+      "token.actions.githubusercontent.com:sub": "repo:mohamed-adem@156377295/api-monitor@1367036023:environment:development"
     }}
   }]
 }
 ```
+
+The subject above matches this repository's observed OIDC identity, including immutable owner and repository IDs. Other repositories may use a different subject format; match the actual identity rather than broadening trust with wildcards.
 
 4. Grant the role CDK deployment permissions for the existing bootstrap configuration. For a standard `hnb659fds` bootstrap, the starting policy below allows assuming only the three required bootstrap roles, reading stack metadata, reading bootstrap version metadata, and inspecting the scheduler. Replace `ACCOUNT_ID`; confirm your actual bootstrap qualifier and role names. The bootstrap deployment and CloudFormation execution roles determine the ultimate resource permissions, so review those roles too.
 
