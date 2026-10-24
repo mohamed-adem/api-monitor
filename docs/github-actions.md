@@ -42,7 +42,7 @@ Deployment is continuous delivery with a manual release trigger: run **Actions â
     },
     {
       "Effect": "Allow",
-      "Action": ["cloudformation:DescribeStacks", "cloudformation:DescribeStackResources", "cloudformation:GetTemplate"],
+      "Action": ["cloudformation:DescribeStacks", "cloudformation:ListStackResources", "cloudformation:GetTemplate"],
       "Resource": "arn:aws:cloudformation:us-west-2:ACCOUNT_ID:stack/PulseApiMonitorDev/*"
     },
     {
